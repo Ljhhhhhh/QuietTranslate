@@ -1,52 +1,123 @@
 import SwiftUI
 
-/// 单个翻译窗口的状态；requestID 保证旧请求的迟到结果不会覆盖新内容。
+struct TranslationResult: Identifiable {
+    let configuration: EngineConfiguration
+    var id: String { configuration.id }
+    var hasRequested = false
+    var output = ""
+    var phase = TranslationModel.Phase.idle
+}
+
 @MainActor
 final class TranslationModel: ObservableObject {
     enum Phase { case idle, loading, done, failed(String) }
     @Published var source = ""
-    @Published var output = ""
-    @Published var phase = Phase.idle
     @Published var direction = Direction.auto
+    @Published var isPinned = false
+    @Published var results: [TranslationResult] = []
+    @Published private(set) var selectedEngineID: String?
+    @Published var configurationError: String?
 
-    private var requestID = 0
-    private var task: Task<Void, Never>?
+    var selectedResult: TranslationResult? { results.first { $0.id == selectedEngineID } }
+
+    private var tasks: [String: Task<Void, Never>] = [:]
+    private var requestIDs: [String: UUID] = [:]
+
+    private var translatedSource = ""
+    private var translatedDirection = Direction.auto
+    private var settingsChanged: Bool {
+        (try? Settings.loadEngines().popupEngines) != results.map(\.configuration)
+    }
+
+    init() { reset() }
 
     func translate() {
-        cancel()
-        let text = source
-        requestID += 1
-        let id = requestID
-        output = ""
-        phase = .loading
-        task = Task {
+        reset()
+        translatedSource = source
+        translatedDirection = direction
+        if !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           source.count <= Settings.maxInput, let first = results.first { start(first.configuration) }
+    }
+
+    func selectEngine(_ engine: String) {
+        guard results.contains(where: { $0.id == engine }) else { return }
+        if source != translatedSource || direction != translatedDirection || settingsChanged {
+            translate()
+        }
+        guard let result = results.first(where: { $0.id == engine }) else { return }
+        selectedEngineID = engine
+        guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              source.count <= Settings.maxInput, !result.hasRequested else { return }
+        start(result.configuration)
+    }
+
+    func retry(_ engine: String) {
+        if source != translatedSource || direction != translatedDirection || settingsChanged {
+            translate()
+            selectEngine(engine)
+            return
+        }
+        guard let index = results.firstIndex(where: { $0.id == engine }) else { return }
+        let configuration = results[index].configuration
+        cancel(engine)
+        results[index] = TranslationResult(configuration: configuration)
+        start(configuration)
+    }
+
+    private func start(_ engine: EngineConfiguration) {
+        let text = source, direction = direction, id = UUID()
+        requestIDs[engine.id] = id
+        guard let index = results.firstIndex(where: { $0.id == engine.id }) else { return }
+        results[index].phase = .loading
+        results[index].hasRequested = true
+        tasks[engine.id] = Task {
             do {
-                for try await chunk in Translator.stream(text, direction: direction) {
-                    guard id == requestID else { return }
-                    output += chunk
+                try Task.checkCancellation()
+                for try await chunk in Translator.stream(text, direction: direction, engine: engine) {
+                    guard requestIDs[engine.id] == id,
+                          let i = results.firstIndex(where: { $0.id == engine.id }) else { return }
+                    results[i].output += chunk
                 }
-                guard id == requestID else { return }
-                phase = .done
+                guard requestIDs[engine.id] == id,
+                      let i = results.firstIndex(where: { $0.id == engine.id }) else { return }
+                results[i].phase = .done
             } catch is CancellationError {
             } catch {
-                guard id == requestID else { return }
-                phase = .failed(error.localizedDescription)
+                guard requestIDs[engine.id] == id,
+                      let i = results.firstIndex(where: { $0.id == engine.id }) else { return }
+                results[i].phase = .failed(error.localizedDescription)
             }
         }
     }
 
-    /// 取消在途请求并使其结果失效。
-    func cancel() {
-        requestID += 1
-        task?.cancel()
-        task = nil
-        if case .loading = phase { phase = .idle }
+    func cancel(_ engine: String) {
+        requestIDs[engine] = nil
+        tasks.removeValue(forKey: engine)?.cancel()
+        if let i = results.firstIndex(where: { $0.id == engine }), case .loading = results[i].phase {
+            results[i].phase = .idle
+        }
     }
 
-    func fail(_ msg: String) { cancel(); output = ""; phase = .failed(msg) }
-
-    func copy() {
+    func cancel() { for engine in Array(tasks.keys) { cancel(engine) } }
+    func reset() {
+        cancel()
+        do {
+            results = try Settings.loadEngines().popupEngines.map { TranslationResult(configuration: $0) }
+            selectedEngineID = results.first?.id
+            configurationError = nil
+        } catch {
+            results = []
+            selectedEngineID = nil
+            configurationError = error.localizedDescription
+        }
+    }
+    func fail(_ message: String) {
+        reset()
+        for i in results.indices { results[i].phase = .failed(message) }
+    }
+    func copy(_ engine: String) {
+        guard let result = results.first(where: { $0.id == engine }), !result.output.isEmpty else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(output, forType: .string)
+        NSPasteboard.general.setString(result.output, forType: .string)
     }
 }
