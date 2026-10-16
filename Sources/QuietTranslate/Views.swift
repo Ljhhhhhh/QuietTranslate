@@ -232,6 +232,7 @@ private final class SourceTextView: NSTextView {
 private struct SourceEditor: NSViewRepresentable {
     @Binding var text: String
     var submit: () -> Void
+    var compact = false
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
@@ -263,10 +264,20 @@ private struct SourceEditor: NSViewRepresentable {
         context.coordinator.parent = self
         guard let editor = scroll.documentView as? SourceTextView else { return }
         editor.submit = submit
+        editor.font = .systemFont(ofSize: compact ? 28 : 17)
         if editor.string != text, !editor.hasMarkedText() {
             editor.string = text
             editor.needsDisplay = true
         }
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView scroll: NSScrollView, context: Context) -> CGSize? {
+        guard compact, let width = proposal.width, width > 0,
+              let editor = scroll.documentView as? NSTextView,
+              let container = editor.textContainer, let layout = editor.layoutManager else { return nil }
+        container.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
+        layout.ensureLayout(for: container)
+        let height = layout.usedRect(for: container).height + editor.textContainerInset.height * 2
+        return CGSize(width: width, height: min(140, max(42, height)))
     }
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: SourceEditor
@@ -413,6 +424,7 @@ private struct TranslationPanel: View {
         !m.source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && m.source.count <= Settings.maxInput
     }
     private func submit() { if canTranslate { m.translate() } }
+    private var compactSource: Bool { Phonetics.supports(m.source) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -477,15 +489,23 @@ private struct TranslationPanel: View {
                 Text("原文").font(.system(size: 13)).foregroundStyle(Celadon.muted)
                 DirectionMenu(m: m)
                 Spacer(minLength: 0)
-                SpeechButton(player: m.speech, target: .source, text: m.source)
+                if !compactSource {
+                    SpeechButton(player: m.speech, target: .source, text: m.source)
+                }
             }
             .frame(height: 36)
             if m.source.count > Settings.maxInput {
                 Text("原文过长（上限 \(Settings.maxInput) 字）")
                     .font(.system(size: 12)).foregroundStyle(.red)
             }
-            SourceEditor(text: $m.source, submit: submit)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(alignment: .leading, spacing: 10) {
+                SourceEditor(text: $m.source, submit: submit, compact: compactSource)
+                    .frame(maxWidth: .infinity, maxHeight: compactSource ? nil : .infinity)
+                if compactSource {
+                    phoneticContent
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             HStack(spacing: 8) {
                 Text("Shift + Return 换行")
                     .font(.system(size: 11)).foregroundStyle(Celadon.muted)
@@ -511,6 +531,29 @@ private struct TranslationPanel: View {
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Celadon.source)
+    }
+
+    private var phoneticContent: some View {
+        HStack(alignment: .center, spacing: 10) {
+            if let us = m.phonetics?.us {
+                Text("美")
+                    .font(.system(size: 12, weight: .medium))
+                    .padding(.horizontal, 5).padding(.vertical, 3)
+                    .background(Celadon.edge.opacity(0.25), in: RoundedRectangle(cornerRadius: 4))
+                    .accessibilityHidden(true)
+                Text("/\(us)/")
+                    .font(.system(size: 17)).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("美式音标，\(us)")
+            } else if case .loading = m.phoneticPhase {
+                ProgressView().controlSize(.mini).accessibilityLabel("正在获取美式音标")
+            } else if case .failed(let message) = m.phoneticPhase {
+                Image(systemName: "exclamationmark.circle")
+                    .help(message).accessibilityLabel(message)
+            }
+            SpeechButton(player: m.speech, target: .source, text: m.source, language: "en-US")
+        }
+        .foregroundStyle(Celadon.muted)
     }
 
     private var translationPane: some View {
@@ -557,6 +600,10 @@ private struct TranslationPanel: View {
                             if m.source.isEmpty { retry() } else { m.retry(result.id) }
                         }
                     } else if case .idle = result.phase, result.hasRequested {
+                        Button("重新翻译") { m.retry(result.id) }
+                    } else if case .loading = m.phoneticPhase {
+                        Button("停止") { m.cancel(result.id) }
+                    } else if case .failed = m.phoneticPhase {
                         Button("重新翻译") { m.retry(result.id) }
                     }
                 }

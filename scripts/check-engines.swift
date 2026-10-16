@@ -1,4 +1,4 @@
-// Run in an isolated executable: swiftc -parse-as-library Sources/QuietTranslate/{Settings,Speech,Model}.swift scripts/check-engines.swift -o /tmp/quiettranslate-engine-check
+// Run in an isolated executable: swiftc -parse-as-library Sources/QuietTranslate/{Settings,Speech,Phonetics,Model}.swift scripts/check-engines.swift -o /tmp/quiettranslate-engine-check
 import Foundation
 import SwiftUI
 
@@ -9,6 +9,13 @@ enum Translator {
     @MainActor static func stream(_ text: String, direction: Direction, engine: EngineConfiguration) -> AsyncThrowingStream<String, Error> {
         calls.append((engine.id, text))
         return AsyncThrowingStream { continuations.append($0) }
+    }
+}
+
+@MainActor enum MockPhonetics {
+    static var continuations: [CheckedContinuation<Phonetics, Error>] = []
+    static func lookup(_ text: String) async throws -> Phonetics {
+        try await withCheckedThrowingContinuation { continuations.append($0) }
     }
 }
 
@@ -24,7 +31,7 @@ enum Translator {
         defer { defaults.removePersistentDomain(forName: domain) }
         let fresh = try Settings.loadEngines()
         assert(fresh.engines.isEmpty && fresh.preferredID.isEmpty)
-        let unconfigured = TranslationModel()
+        let unconfigured = TranslationModel(phoneticLookup: MockPhonetics.lookup)
         unconfigured.source = "hello"
         unconfigured.translate()
         await settle()
@@ -66,7 +73,7 @@ enum Translator {
         defaults.set(try JSONEncoder().encode(preferences), forKey: "enginePreferences")
         let restored = try Settings.loadEngines()
         assert(restored == preferences)
-        let model = TranslationModel()
+        let model = TranslationModel(phoneticLookup: MockPhonetics.lookup)
         model.source = "first"
         model.translate()
         await settle()
@@ -115,6 +122,26 @@ enum Translator {
         await settle()
         assert(Translator.calls.count == callsBeforeEmpty)
         assert(model.selectedResult?.output.isEmpty == true)
+        let pendingPhonetics = MockPhonetics.continuations
+        for pending in pendingPhonetics {
+            pending.resume(returning: Phonetics(us: "test"))
+        }
+        await settle()
+        assert(model.phonetics == nil)
+        model.source = "hello"
+        model.translate()
+        await settle()
+        MockPhonetics.continuations.last?.resume(returning: Phonetics(us: "həˈloʊ"))
+        await settle()
+        assert(model.phonetics?.us == "həˈloʊ")
+        let lookups = MockPhonetics.continuations.count
+        model.selectEngine("local")
+        await settle()
+        assert(MockPhonetics.continuations.count == lookups)
+        assert(model.phonetics?.us == "həˈloʊ")
+        model.source = "changed"
+        assert(model.phonetics == nil)
+        model.cancel()
         defaults.set(Data("broken".utf8), forKey: "enginePreferences")
         model.reset()
         assert(model.configurationError != nil && model.results.isEmpty)
