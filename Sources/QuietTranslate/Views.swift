@@ -632,8 +632,16 @@ struct SettingsView: View {
                     .accessibilityAddTraits(.updatesFrequently)
                 Spacer(minLength: 0)
                 if busy { ProgressView().controlSize(.small) }
-                Button("保存设置", action: save)
+                Button(action: save) {
+                    Text("保存设置")
+                        .font(.system(size: 14, weight: .semibold))
+                        .padding(.horizontal, 12)
+                        .frame(minWidth: 96, minHeight: 28)
+                }
                     .buttonStyle(.borderedProminent)
+                    .buttonBorderShape(.roundedRectangle(radius: 8))
+                    .controlSize(.large)
+                    .fixedSize()
                     .modifier(PointerCursor())
                     .keyboardShortcut("s", modifiers: .command)
                     .disabled(busy || loadFailure != nil)
