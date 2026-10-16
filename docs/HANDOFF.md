@@ -147,3 +147,7 @@
 ## 9. 后续实施会话启动指令
 
 > 请阅读本项目 AGENTS.md 和 docs/HANDOFF.md，以 docs/design/concept-v1.png 为视觉方向，开始实施 QuietTranslate。先完成 P0 环境确认，再按 P1–P4 顺序推进；优先验证取词与焦点机制，所有未验证事项保持待验证。遵循 E2E 执行与产物保留的事前询问要求。不要扩展到 OCR、历史记录或模型管理，不要修改现有 Bob、Raycast 或模型服务配置。常规实现选择自行推进，遇到真正阻塞或需授权的动作再询问。
+
+## 10. 重新安装后的授权身份修复
+
+打包已从 ad-hoc 改为复用钥匙串中的 `QuietTranslate Local Signing` 证书，支持通过 `CODE_SIGN_IDENTITY` 指定发行证书。首次初始化使用 `zsh scripts/setup-signing.sh`；日常打包不创建或替换证书。旧版本升级需要一次授权迁移，用户配置与密钥保持不变。辅助功能授权跨升级的实际交互验证待执行，不能以签名检查代替。
