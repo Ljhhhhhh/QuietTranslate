@@ -694,7 +694,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("翻译引擎").font(.system(size: 25, weight: .semibold))
-                Text("选择自动翻译的引擎，管理其他翻译选择。")
+                Text(preferences.engines.isEmpty ? "欢迎使用。请添加翻译引擎，填写服务地址、模型及所需的 API Key，然后保存设置。" : "选择自动翻译的引擎，管理其他翻译选择。")
                     .font(.callout).foregroundStyle(.secondary)
             }
             .padding(.bottom, 22)
@@ -738,7 +738,7 @@ struct SettingsView: View {
                         .padding(3)
                 }
             } else {
-                Text("选择一个引擎进行配置")
+                Text(preferences.engines.isEmpty ? "点击“添加引擎”开始初始化配置" : "选择一个引擎进行配置")
                     .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
@@ -868,7 +868,8 @@ struct SettingsView: View {
     }
 
     private func addEngine() {
-        let engine = EngineConfiguration(name: "自定义引擎", baseURL: "", model: "")
+        let engine = EngineConfiguration(name: "", baseURL: "", model: "")
+        if preferences.engines.isEmpty { preferences.preferredID = engine.id }
         preferences.engines.append(engine)
         selectedID = engine.id
         status = "填写服务地址与模型后保存。"

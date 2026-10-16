@@ -22,7 +22,21 @@ enum Translator {
         let domain = ProcessInfo.processInfo.processName
         defaults.removePersistentDomain(forName: domain)
         defer { defaults.removePersistentDomain(forName: domain) }
+        let fresh = try Settings.loadEngines()
+        assert(fresh.engines.isEmpty && fresh.preferredID.isEmpty)
+        let unconfigured = TranslationModel()
+        unconfigured.source = "hello"
+        unconfigured.translate()
+        await settle()
+        assert(unconfigured.results.isEmpty && unconfigured.configurationError != nil)
+        assert(Translator.calls.isEmpty)
+        do { try fresh.validate(); assertionFailure("Empty settings accepted") } catch {}
         defaults.set("legacy-model", forKey: "model")
+        let incomplete = try Settings.loadEngines()
+        assert(incomplete.engines.isEmpty)
+        defaults.set("http://localhost:9998/v1", forKey: "baseURL")
+        defaults.set("http://localhost:9997/v1", forKey: "cpaBaseURL")
+        defaults.set("legacy-cpa", forKey: "cpaModel")
         defaults.set(true, forKey: "cpaEnabled")
         let migrated = try Settings.loadEngines()
         assert(migrated.preferredID == "local")

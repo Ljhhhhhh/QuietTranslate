@@ -110,7 +110,7 @@ final class TranslationModel: ObservableObject {
         do {
             results = try Settings.loadEngines().popupEngines.map { TranslationResult(configuration: $0) }
             selectedEngineID = results.first?.id
-            configurationError = nil
+            configurationError = results.isEmpty ? "请先在设置中添加翻译引擎，填写服务地址和模型并保存。" : nil
         } catch {
             results = []
             selectedEngineID = nil

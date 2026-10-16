@@ -93,7 +93,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return event
         }
+        _ = requireConfiguration()
+    }
 
+    private func requireConfiguration() -> Bool {
+        guard let preferences = try? Settings.loadEngines(), !preferences.engines.isEmpty else {
+            openSettings()
+            return false
+        }
+        return true
     }
 
     // MARK: 划词
@@ -107,6 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func runSelection() {
+        guard requireConfiguration() else { return }
         let previousTask = selectionTask
         let sourcePID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         previousTask?.cancel()
@@ -190,6 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: 输入
     @objc func inputAction() {
+        guard requireConfiguration() else { return }
         if inPanel?.isVisible == true {
             if inModel.isPinned {
                 NSApp.activate(ignoringOtherApps: true)

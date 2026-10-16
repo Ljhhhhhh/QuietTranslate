@@ -56,15 +56,19 @@ enum Settings {
                 throw Self.error("无法读取引擎配置，原配置已保留。请检查本机配置后重新打开设置。")
             }
         }
-        return EnginePreferences(engines: [
-            EngineConfiguration(id: "local", name: "本地模型",
-                                baseURL: d.string(forKey: "baseURL") ?? "http://127.0.0.1:8765/v1",
-                                model: d.string(forKey: "model") ?? "hy-mt2-1.8b-q4", showInPopup: true),
-            EngineConfiguration(id: "cpa", name: "CPA",
-                                baseURL: d.string(forKey: "cpaBaseURL") ?? "http://127.0.0.1:18317/v1",
-                                model: d.string(forKey: "cpaModel") ?? "gemini-2.5-flash",
-                                showInPopup: d.bool(forKey: "cpaEnabled"))
-        ], preferredID: "local")
+        // Only migrate complete, explicitly stored legacy engines; never supply service defaults.
+        var engines: [EngineConfiguration] = []
+        for (id, name, urlKey, modelKey) in [("local", "本地模型", "baseURL", "model"),
+                                             ("cpa", "CPA", "cpaBaseURL", "cpaModel")] {
+            if let url = d.string(forKey: urlKey), let model = d.string(forKey: modelKey) {
+                let engine = EngineConfiguration(id: id, name: name, baseURL: url, model: model,
+                                                 showInPopup: id == "local" || d.bool(forKey: "cpaEnabled"))
+                if (try? EnginePreferences(engines: [engine], preferredID: id).validate()) != nil {
+                    engines.append(engine)
+                }
+            }
+        }
+        return EnginePreferences(engines: engines, preferredID: engines.first?.id ?? "")
     }
 
     /// Validate before touching credentials; commit configuration before cleaning up removed credentials.
