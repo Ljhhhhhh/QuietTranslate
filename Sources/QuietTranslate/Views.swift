@@ -210,7 +210,10 @@ private final class SourceTextView: NSTextView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        window?.initialFirstResponder = self
+        guard let window else { return }
+        window.initialFirstResponder = self
+        // 首次显示时，SwiftUI 可能在窗口成为 key window 后才挂载编辑器。
+        if window.isKeyWindow { window.makeFirstResponder(self) }
     }
     override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)

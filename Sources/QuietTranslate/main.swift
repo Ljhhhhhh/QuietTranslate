@@ -230,9 +230,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let size = p.frame.size
         let v = screen.visibleFrame
         p.setFrameOrigin(NSPoint(x: v.midX - size.width / 2, y: v.midY + v.height * 0.1 - size.height / 2))
+        // 首次打开先挂载 SwiftUI 编辑器，确保 initialFirstResponder 已就绪。
+        p.contentView?.layoutSubtreeIfNeeded()
         NSApp.activate(ignoringOtherApps: true)
         p.makeKeyAndOrderFront(nil)
         p.makeFirstResponder(p.initialFirstResponder)
+        DispatchQueue.main.async { [weak p] in
+            guard let p, p.isVisible, p.isKeyWindow, NSApp.isActive else { return }
+            p.contentView?.layoutSubtreeIfNeeded()
+            p.makeFirstResponder(p.initialFirstResponder)
+        }
         // Esc：仅在输入窗口为 key window 时由本应用处理，不会传给原应用。
         escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             if e.keyCode == UInt16(kVK_Escape), e.window === self?.inPanel, !((e.window?.firstResponder as? NSTextView)?.hasMarkedText() ?? false) {
