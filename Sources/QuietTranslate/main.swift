@@ -22,6 +22,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        // 菜单栏应用默认没有主菜单，需要 Edit 菜单才能在输入窗口使用 ⌘C/⌘V/⌘A/⌘Z。
+        let main = NSMenu(), editItem = NSMenuItem(), edit = NSMenu(title: "Edit")
+        for (t, a, k) in [("撤销", Selector(("undo:")), "z"), ("剪切", #selector(NSText.cut(_:)), "x"),
+                          ("拷贝", #selector(NSText.copy(_:)), "c"), ("粘贴", #selector(NSText.paste(_:)), "v"),
+                          ("全选", #selector(NSText.selectAll(_:)), "a")] {
+            edit.addItem(withTitle: t, action: a, keyEquivalent: k)
+        }
+        editItem.submenu = edit; main.addItem(editItem); NSApp.mainMenu = main
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "character.bubble", accessibilityDescription: "QuietTranslate")
         let menu = NSMenu()
