@@ -33,6 +33,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var prevApp: NSRunningApplication?
     var outsideMonitor: Any?
     var localOutsideMonitor: Any?
+    var selectionTask: Task<Void, Never>?
+    var selectionRequestID: UUID?
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if inPanel?.isVisible != true { inputAction() }
@@ -96,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: 划词
     @objc func selectionAction() {
+        if selectionRequestID != nil { closeSelection(); return }
         if selPanel?.isVisible == true {
             if selModel.isPinned { selPanel?.orderFrontRegardless() } else { closeSelection() }
             return
@@ -104,16 +107,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func runSelection() {
+        let previousTask = selectionTask
+        let sourcePID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        previousTask?.cancel()
+        let id = UUID()
+        selectionRequestID = id
         selModel.reset()
-        do {
-            let (text, rect) = try Selection.read()
-            selModel.source = text
-            showSelection(near: rect)
-            selModel.translate()
-        } catch {
-            selModel.source = ""
-            showSelection(near: nil)
-            selModel.fail(error.localizedDescription)
+        selectionTask = Task {
+            await previousTask?.value
+            defer {
+                if selectionRequestID == id { selectionRequestID = nil; selectionTask = nil }
+            }
+            do {
+                try Task.checkCancellation()
+                guard NSWorkspace.shared.frontmostApplication?.processIdentifier == sourcePID else { return }
+                let (text, rect) = try await Selection.read()
+                try Task.checkCancellation()
+                guard selectionRequestID == id else { return }
+                selModel.source = text
+                showSelection(near: rect)
+                selModel.translate()
+            } catch is CancellationError {
+            } catch {
+                guard !Task.isCancelled, selectionRequestID == id else { return }
+                selModel.source = ""
+                showSelection(near: nil)
+                selModel.fail(error.localizedDescription)
+            }
         }
     }
 
@@ -148,6 +168,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func closeSelection() {
+        selectionRequestID = nil
+        selectionTask?.cancel()
         selModel.cancel()
         selPanel?.makeFirstResponder(nil)
         selPanel?.orderOut(nil)
