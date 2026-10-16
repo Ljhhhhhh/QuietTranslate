@@ -11,8 +11,9 @@ struct TranslationResult: Identifiable {
 @MainActor
 final class TranslationModel: ObservableObject {
     enum Phase { case idle, loading, done, failed(String) }
-    @Published var source = ""
-    @Published var direction = Direction.auto
+    @Published var source = "" { didSet { if source != oldValue { speech.stop() } } }
+    @Published var direction = Direction.auto { didSet { if direction != oldValue { speech.stop() } } }
+    let speech = SpeechPlayer()
     @Published var isPinned = false
     @Published var results: [TranslationResult] = []
     @Published private(set) var selectedEngineID: String?
@@ -41,6 +42,7 @@ final class TranslationModel: ObservableObject {
 
     func selectEngine(_ engine: String) {
         guard results.contains(where: { $0.id == engine }) else { return }
+        if selectedEngineID != engine { speech.stop() }
         if source != translatedSource || direction != translatedDirection || settingsChanged {
             translate()
         }
@@ -52,6 +54,7 @@ final class TranslationModel: ObservableObject {
     }
 
     func retry(_ engine: String) {
+        speech.stop()
         if source != translatedSource || direction != translatedDirection || settingsChanged {
             translate()
             selectEngine(engine)
@@ -98,7 +101,10 @@ final class TranslationModel: ObservableObject {
         }
     }
 
-    func cancel() { for engine in Array(tasks.keys) { cancel(engine) } }
+    func cancel() {
+        speech.stop()
+        for engine in Array(tasks.keys) { cancel(engine) }
+    }
     func reset() {
         cancel()
         do {

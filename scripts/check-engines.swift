@@ -1,4 +1,4 @@
-// Run in an isolated executable: swiftc -parse-as-library Sources/QuietTranslate/{Settings,Model}.swift scripts/check-engines.swift -o /tmp/quiettranslate-engine-check
+// Run in an isolated executable: swiftc -parse-as-library Sources/QuietTranslate/{Settings,Speech,Model}.swift scripts/check-engines.swift -o /tmp/quiettranslate-engine-check
 import Foundation
 import SwiftUI
 

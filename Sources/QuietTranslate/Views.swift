@@ -365,6 +365,41 @@ private struct EngineSwitcher: View {
     }
 }
 
+private struct SpeechButton: View {
+    @ObservedObject var player: SpeechPlayer
+    let target: SpeechPlayer.Target
+    let text: String
+    var language: String? = nil
+    var available = true
+
+    private var playing: Bool { player.target == target }
+    private var title: String { playing ? "停止朗读" : (target == .source ? "朗读原文" : "朗读译文") }
+
+    var body: some View {
+        Button { player.toggle(text: text, target: target, language: language) } label: {
+            Image(systemName: playing ? "stop.fill" : "speaker.wave.2")
+                .frame(width: 24, height: 24)
+        }
+        .foregroundStyle(playing ? Celadon.accent : Celadon.muted)
+        .disabled(!playing && (!available || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+        .help(!available ? "翻译完成后可朗读译文" : title)
+        .accessibilityLabel(title)
+        .accessibilityValue(playing ? "正在朗读" : "未播放")
+    }
+}
+
+private struct SpeechFeedback: View {
+    @ObservedObject var player: SpeechPlayer
+    var body: some View {
+        if let error = player.error {
+            Label(error, systemImage: "exclamationmark.triangle")
+                .font(.system(size: 12)).foregroundStyle(Celadon.ink)
+                .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.10))
+        }
+    }
+}
+
 private struct TranslationPanel: View {
     @ObservedObject var m: TranslationModel
     var close: () -> Void
@@ -379,6 +414,7 @@ private struct TranslationPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            SpeechFeedback(player: m.speech)
             Divider().overlay(Celadon.edge.opacity(0.5))
             HStack(spacing: 0) {
                 sourcePane
@@ -438,6 +474,7 @@ private struct TranslationPanel: View {
                 Text("原文").font(.system(size: 13)).foregroundStyle(Celadon.muted)
                 DirectionMenu(m: m)
                 Spacer(minLength: 0)
+                SpeechButton(player: m.speech, target: .source, text: m.source)
             }
             .frame(height: 36)
             if m.source.count > Settings.maxInput {
@@ -480,6 +517,9 @@ private struct TranslationPanel: View {
                 EngineSwitcher(m: m)
                     .frame(minWidth: 0, maxWidth: .infinity)
                 if let result = m.selectedResult {
+                    SpeechButton(player: m.speech, target: .translation, text: result.output,
+                                 language: m.direction.target(for: m.source) == "English" ? "en-US" : "zh-CN",
+                                 available: { if case .done = result.phase { return true }; return false }())
                     Button { m.copy(result.id) } label: {
                         Label("复制", systemImage: "doc.on.doc")
                             .font(.system(size: 12)).fixedSize()
