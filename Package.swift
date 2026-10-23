@@ -4,5 +4,8 @@ import PackageDescription
 let package = Package(
     name: "QuietTranslate",
     platforms: [.macOS(.v14)],
-    targets: [.executableTarget(name: "QuietTranslate", resources: [.process("Assets")])]
+    dependencies: [.package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0")],
+    targets: [.executableTarget(name: "QuietTranslate", dependencies: ["Sparkle"],
+                                resources: [.process("Assets")],
+                                linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])])]
 )

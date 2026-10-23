@@ -3,6 +3,17 @@ import Foundation
 struct Phonetics {
     let us: String?
 
+    private final class Cached: NSObject {
+        let value: Phonetics
+        let expires = Date().addingTimeInterval(24 * 60 * 60)
+        init(_ value: Phonetics) { self.value = value }
+    }
+    private static let cache: NSCache<NSString, Cached> = {
+        let cache = NSCache<NSString, Cached>()
+        cache.countLimit = 256
+        return cache
+    }()
+
     static func supports(_ raw: String) -> Bool {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.count <= 64 && text.split(separator: " ").count <= 4
@@ -11,21 +22,35 @@ struct Phonetics {
     }
 
     static func lookup(_ raw: String) async throws -> Phonetics {
+        try await lookup(raw, session: .shared)
+    }
+
+    static func lookup(_ raw: String, session: URLSession) async throws -> Phonetics {
+        try Task.checkCancellation()
         let word = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard supports(word) else { return Phonetics(us: nil) }
+        let key = word.replacingOccurrences(of: "’", with: "'").lowercased() as NSString
+        if let cached = cache.object(forKey: key), cached.expires > Date() { return cached.value }
         var components = URLComponents(string: "https://dictionary.cambridge.org/search/direct/")!
-        components.queryItems = [URLQueryItem(name: "datasetsearch", value: "english-chinese-simplified"),
-                                 URLQueryItem(name: "q", value: word)]
+        if word.range(of: "^[A-Za-z]+$", options: .regularExpression) != nil {
+            components.path = "/dictionary/english-chinese-simplified/" + word.lowercased()
+        } else {
+            components.queryItems = [URLQueryItem(name: "datasetsearch", value: "english-chinese-simplified"),
+                                     URLQueryItem(name: "q", value: word)]
+        }
         var request = URLRequest(url: components.url!, timeoutInterval: 12)
         request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
         request.setValue("text/html", forHTTPHeaderField: "Accept")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
               http.url?.host == "dictionary.cambridge.org", data.count <= 2_000_000 else {
             throw URLError(.badServerResponse)
         }
-        return try parseHTML(data, word: word)
+        let result = try parseHTML(data, word: word)
+        try Task.checkCancellation()
+        if result.us != nil { cache.setObject(Cached(result), forKey: key) }
+        return result
     }
 
     static func parseHTML(_ data: Data, word: String) throws -> Phonetics {

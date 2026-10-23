@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Carbon.HIToolbox
+import Sparkle
 
 /// 浮层：不激活应用，因此不抢原应用键盘焦点。
 final class FloatPanel: NSPanel {
@@ -22,7 +23,7 @@ final class FloatPanel: NSPanel {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     let selModel = TranslationModel()
     let inModel = TranslationModel()
     var selPanel: FloatPanel?
@@ -35,10 +36,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var localOutsideMonitor: Any?
     var selectionTask: Task<Void, Never>?
     var selectionRequestID: UUID?
+    private let selectionFrameName = "QuietTranslate.SelectionPanel"
+    private let inputFrameName = "QuietTranslate.InputPanel"
+    let updaterController = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if inPanel?.isVisible != true { inputAction() }
         return false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        selPanel?.saveFrame(usingName: selectionFrameName)
+        inPanel?.saveFrame(usingName: inputFrameName)
     }
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -59,8 +68,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(withTitle: t, action: a, keyEquivalent: "").target = self
         }
         menu.addItem(.separator())
+        menu.addItem(withTitle: "检查更新…", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+                     keyEquivalent: "").target = updaterController
+        menu.addItem(withTitle: "自动检查更新", action: #selector(toggleAutomaticUpdates), keyEquivalent: "").target = self
+        menu.addItem(.separator())
         menu.addItem(withTitle: "退出", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu
+        updaterController.startUpdater()
 
         let mods = optionKey
         let a = HotKey(keyCode: kVK_ANSI_D, modifiers: mods) { [weak self] in self?.selectionAction() }
@@ -100,6 +114,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let preferences = try? Settings.loadEngines(), !preferences.engines.isEmpty else {
             openSettings()
             return false
+        }
+        return true
+    }
+
+    @objc func toggleAutomaticUpdates(_ sender: NSMenuItem) {
+        updaterController.updater.automaticallyChecksForUpdates.toggle()
+    }
+
+    @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleAutomaticUpdates) {
+            menuItem.state = updaterController.updater.automaticallyChecksForUpdates ? .on : .off
         }
         return true
     }
@@ -147,6 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showSelection(near rect: NSRect?) {
+        var shouldPositionNearSelection = false
         if selPanel == nil {
             let p = FloatPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 360),
                                styleMask: [.borderless, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -157,6 +183,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             p.hidesOnDeactivate = false
             p.keyable = true
             p.becomesKeyOnlyIfNeeded = true
+            p.setFrameAutosaveName(selectionFrameName)
+            shouldPositionNearSelection = !p.setFrameUsingName(selectionFrameName)
             let host = NSHostingView(rootView: SelectionView(m: selModel, close: { [weak self] in self?.closeSelection() },
                                                              retry: { [weak self] in self?.retrySelection() },
                                                              openSettings: { [weak self] in self?.openSettings() }))
@@ -165,9 +193,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             selPanel = p
         }
         guard let p = selPanel else { return }
-        let size = p.frame.size
-        let pt = rect.map { NSPoint(x: $0.minX, y: $0.minY - 8) } ?? NSEvent.mouseLocation
-        p.setFrameOrigin(clamp(origin: NSPoint(x: pt.x, y: pt.y - size.height), size: size, anchor: pt))
+        if shouldPositionNearSelection {
+            let size = p.frame.size
+            let pt = rect.map { NSPoint(x: $0.minX, y: $0.minY - 8) } ?? NSEvent.mouseLocation
+            p.setFrameOrigin(clamp(origin: NSPoint(x: pt.x, y: pt.y - size.height), size: size, anchor: pt))
+        }
         p.orderFrontRegardless()
     }
 
@@ -181,6 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         selectionTask?.cancel()
         selModel.cancel()
         selPanel?.makeFirstResponder(nil)
+        selPanel?.saveFrame(usingName: selectionFrameName)
         selPanel?.orderOut(nil)
         selModel.source = ""
         selModel.isPinned = false
@@ -210,6 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !selModel.isPinned { closeSelection() }
         inModel.reset()
         prevApp = NSWorkspace.shared.frontmostApplication
+        var shouldCenter = false
         if inPanel == nil {
             let p = FloatPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 360),
                                styleMask: [.borderless, .resizable], backing: .buffered, defer: false)
@@ -219,6 +251,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             p.level = .floating; p.isOpaque = false; p.backgroundColor = .clear; p.hasShadow = true
             p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             p.hidesOnDeactivate = false
+            p.setFrameAutosaveName(inputFrameName)
+            shouldCenter = !p.setFrameUsingName(inputFrameName)
             let host = NSHostingView(rootView: InputView(m: inModel, close: { [weak self] in self?.closeInput() },
                                                        openSettings: { [weak self] in self?.openSettings() }))
             host.sizingOptions = []
@@ -226,10 +260,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             inPanel = p
         }
         guard let p = inPanel else { return }
-        let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main!
-        let size = p.frame.size
-        let v = screen.visibleFrame
-        p.setFrameOrigin(NSPoint(x: v.midX - size.width / 2, y: v.midY + v.height * 0.1 - size.height / 2))
+        if shouldCenter {
+            let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main!
+            let size = p.frame.size
+            let v = screen.visibleFrame
+            p.setFrameOrigin(NSPoint(x: v.midX - size.width / 2, y: v.midY + v.height * 0.1 - size.height / 2))
+        }
         // 首次打开先挂载 SwiftUI 编辑器，确保 initialFirstResponder 已就绪。
         p.contentView?.layoutSubtreeIfNeeded()
         NSApp.activate(ignoringOtherApps: true)
@@ -253,6 +289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func closeInput(restoreFocus: Bool = true) {
         inModel.cancel()
         inPanel?.makeFirstResponder(nil)
+        inPanel?.saveFrame(usingName: inputFrameName)
         inPanel?.orderOut(nil)
         inModel.source = ""
         if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
