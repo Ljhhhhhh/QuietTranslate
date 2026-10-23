@@ -7,7 +7,22 @@ import Sparkle
 final class FloatPanel: NSPanel {
     var keyable = false
     var isResizingFromHandle = false
+    private(set) var interactionVersion = 0
     override var canBecomeKey: Bool { keyable }
+
+    override func sendEvent(_ event: NSEvent) {
+        switch event.type {
+        case .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel:
+            interactionVersion &+= 1
+        default: break
+        }
+        super.sendEvent(event)
+    }
+
+    override func resignKey() {
+        interactionVersion &+= 1
+        super.resignKey()
+    }
 
     func isInteracting(at point: NSPoint) -> Bool {
         // 系统缩放热区延伸到窗口外，边缘按下不应触发外部点击关闭。

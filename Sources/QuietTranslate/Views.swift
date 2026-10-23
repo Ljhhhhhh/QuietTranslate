@@ -219,7 +219,7 @@ private final class SourceTextView: NSTextView {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if (event.keyCode == 36 || event.keyCode == 76), !hasMarkedText(),
            modifiers.intersection([.shift, .command, .control, .option]).isEmpty {
-            submit()
+            if !event.isARepeat { submit() }
         } else if (event.keyCode == 36 || event.keyCode == 76), !hasMarkedText(),
                   (modifiers == .shift || modifiers == .command) {
             insertNewline(nil)
@@ -414,6 +414,131 @@ private struct SpeechFeedback: View {
     }
 }
 
+private struct CopyFocusTracker: NSViewRepresentable {
+    let result: TranslationResult
+    let source: String
+    let direction: Direction
+    var focus: () -> Void
+
+    func makeNSView(context: Context) -> Tracker { Tracker() }
+    func updateNSView(_ view: Tracker, context: Context) {
+        view.update(result: result, source: source, direction: direction, focus: focus)
+    }
+
+    final class Tracker: NSView {
+        private var revision: UUID?
+        private var phase = TranslationModel.Phase.idle
+        private var source = ""
+        private var direction = Direction.auto
+        private weak var trackedWindow: FloatPanel?
+        private weak var responder: NSResponder?
+        private var interactionVersion: Int?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        func update(result: TranslationResult, source: String, direction: Direction, focus: @escaping () -> Void) {
+            let changed = revision != result.revision
+            let starting = result.phase == .loading && phase != .loading
+            let finished = result.phase == .done && (changed || phase != .done)
+            if changed || starting {
+                trackedWindow = window as? FloatPanel
+                responder = window?.firstResponder
+                interactionVersion = trackedWindow?.isKeyWindow == true ? trackedWindow?.interactionVersion : nil
+            } else if source != self.source || direction != self.direction {
+                interactionVersion = nil
+            }
+            if result.phase != .loading && result.phase != .done { interactionVersion = nil }
+            revision = result.revision
+            phase = result.phase
+            self.source = source
+            self.direction = direction
+            guard finished, !result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            // SwiftUI 焦点更新延后一轮，并再次核对窗口、输入法及用户操作。
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.revision == result.revision, self.phase == .done,
+                      let panel = self.trackedWindow, self.window === panel,
+                      panel.isVisible, panel.isKeyWindow,
+                      self.interactionVersion == panel.interactionVersion,
+                      self.responder === panel.firstResponder,
+                      !((panel.firstResponder as? NSTextView)?.hasMarkedText() ?? false) else { return }
+                focus()
+            }
+        }
+    }
+}
+
+private struct TranslationCopyButton: View {
+    @ObservedObject var m: TranslationModel
+    let result: TranslationResult
+    @FocusState private var isFocused: Bool
+    @State private var copied: Bool?
+    @State private var feedbackTask: Task<Void, Never>?
+
+    private var available: Bool { !result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var help: String {
+        if copied == false { return "未能写入剪贴板，请重试" }
+        if !available { return "有译文后可复制" }
+        if result.phase != .done { return "复制当前已生成的译文（⌘⇧C）" }
+        return isFocused ? "回车复制当前译文（⌘⇧C）" : "复制当前译文（⌘⇧C）"
+    }
+
+    var body: some View {
+        Button(action: copy) {
+            HStack(spacing: 5) {
+                Label(copied == true ? "已复制" : (copied == false ? "复制失败" : "复制"),
+                      systemImage: copied == true ? "checkmark" : (copied == false ? "exclamationmark.circle" : "doc.on.doc"))
+                if isFocused, copied == nil {
+                    Image(systemName: "return").accessibilityHidden(true)
+                }
+            }
+            .font(.system(size: 12)).frame(width: 84, height: 24)
+        }
+        .foregroundStyle(copied == true || isFocused ? Celadon.accent : Celadon.muted)
+        .disabled(!available)
+        .focusable()
+        .focused($isFocused)
+        .focusEffectDisabled()
+        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(isFocused ? Celadon.accent : .clear, lineWidth: 1.5))
+        .onKeyPress(keys: [.return, KeyEquivalent("\u{3}")], phases: .down) { press in
+            guard press.modifiers.isEmpty, available else { return .ignored }
+            copy()
+            return .handled
+        }
+        .keyboardShortcut("c", modifiers: [.command, .shift])
+        .help(help)
+        .accessibilityLabel("复制" + result.configuration.name + "译文")
+        .accessibilityValue(copied == true ? "已复制" : (copied == false ? "复制失败，请重试" : (isFocused ? "回车复制" : "")))
+        .background(CopyFocusTracker(result: result, source: m.source, direction: m.direction) { isFocused = true })
+        .onChange(of: result.revision) { _, _ in reset() }
+        .onChange(of: m.source) { _, _ in reset() }
+        .onChange(of: m.direction) { _, _ in reset() }
+        .onChange(of: result.phase) { _, phase in if phase != .done { isFocused = false } }
+        .onChange(of: result.output) { _, _ in clearFeedback() }
+        .onDisappear { reset() }
+    }
+
+    private func copy() {
+        clearFeedback()
+        copied = m.copy(result.id)
+        guard copied == true else { return }
+        feedbackTask = Task { @MainActor in
+            do { try await Task.sleep(for: .seconds(1.5)) } catch { return }
+            copied = nil
+        }
+    }
+
+    private func clearFeedback() {
+        feedbackTask?.cancel()
+        feedbackTask = nil
+        copied = nil
+    }
+
+    private func reset() {
+        clearFeedback()
+        isFocused = false
+    }
+}
+
 private struct TranslationPanel: View {
     @ObservedObject var m: TranslationModel
     var close: () -> Void
@@ -566,14 +691,7 @@ private struct TranslationPanel: View {
                     SpeechButton(player: m.speech, target: .translation, text: result.output,
                                  language: m.direction.target(for: m.source) == "English" ? "en-US" : "zh-CN",
                                  available: { if case .done = result.phase { return true }; return false }())
-                    Button { m.copy(result.id) } label: {
-                        Label("复制", systemImage: "doc.on.doc")
-                            .font(.system(size: 12)).fixedSize()
-                    }
-                    .foregroundStyle(Celadon.muted)
-                    .disabled(result.output.isEmpty)
-                    .help("复制当前译文")
-                    .accessibilityLabel("复制" + result.configuration.name + "译文")
+                    TranslationCopyButton(m: m, result: result)
                 }
             }
             .frame(height: 36)

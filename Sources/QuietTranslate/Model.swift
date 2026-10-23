@@ -2,6 +2,7 @@ import SwiftUI
 
 struct TranslationResult: Identifiable {
     let configuration: EngineConfiguration
+    let revision = UUID()
     var id: String { configuration.id }
     var hasRequested = false
     var output = ""
@@ -10,7 +11,7 @@ struct TranslationResult: Identifiable {
 
 @MainActor
 final class TranslationModel: ObservableObject {
-    enum Phase { case idle, loading, done, failed(String) }
+    enum Phase: Equatable { case idle, loading, done, failed(String) }
     @Published var source = "" { didSet { if source != oldValue { speech.stop(); clearPhonetics() } } }
     @Published var direction = Direction.auto { didSet { if direction != oldValue { speech.stop(); clearPhonetics() } } }
     let speech = SpeechPlayer()
@@ -170,9 +171,11 @@ final class TranslationModel: ObservableObject {
         reset()
         for i in results.indices { results[i].phase = .failed(message) }
     }
-    func copy(_ engine: String) {
-        guard let result = results.first(where: { $0.id == engine }), !result.output.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(result.output, forType: .string)
+    @discardableResult
+    func copy(_ engine: String, to pasteboard: NSPasteboard = .general) -> Bool {
+        guard let result = results.first(where: { $0.id == engine }),
+              !result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        pasteboard.clearContents()
+        return pasteboard.setString(result.output, forType: .string)
     }
 }
