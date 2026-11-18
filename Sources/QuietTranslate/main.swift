@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import SwiftUI
 import Carbon.HIToolbox
 import Sparkle
@@ -48,7 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     var hotKeys: [HotKey] = []
     var prevApp: NSRunningApplication?
     var outsideMonitor: Any?
-    var localOutsideMonitor: Any?
+    var localPanelMonitor: Any?
+    private var selectionEscapeTap: CFMachPort?
+    private var selectionEscapePressed = false
     var selectionTask: Task<Void, Never>?
     var selectionRequestID: UUID?
     private let selectionFrameName = "QuietTranslate.SelectionPanel"
@@ -61,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        stopWatchingSelectionEscape()
         selPanel?.saveFrame(usingName: selectionFrameName)
         inPanel?.saveFrame(usingName: inputFrameName)
     }
@@ -106,8 +110,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                    !panel.isInteracting(at: location) { self.closeInput(restoreFocus: false) }
             }
         }
-        localOutsideMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+        localPanelMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
             guard let self else { return event }
+            if event.type == .keyDown {
+                guard event.keyCode == UInt16(kVK_Escape),
+                      event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+                      let panel = event.window as? FloatPanel, panel.isKeyWindow, panel.isVisible,
+                      !((panel.firstResponder as? NSTextInputClient)?.hasMarkedText() ?? false) else { return event }
+                if event.isARepeat { return nil }
+                if panel === self.inPanel { self.closeInput() }
+                else if panel === self.selPanel { self.closeSelection() }
+                else { return event }
+                return nil
+            }
             if let window = event.window,
                window === self.settingsWindow || window === self.selPanel || window === self.inPanel {
                 let location = NSEvent.mouseLocation
@@ -174,19 +189,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 try Task.checkCancellation()
                 guard selectionRequestID == id else { return }
                 selModel.source = text
-                showSelection(near: rect)
+                showSelection(near: rect, sourcePID: sourcePID)
                 selModel.translate()
             } catch is CancellationError {
             } catch {
                 guard !Task.isCancelled, selectionRequestID == id else { return }
                 selModel.source = ""
-                showSelection(near: nil)
+                showSelection(near: nil, sourcePID: sourcePID)
                 selModel.fail(error.localizedDescription)
             }
         }
     }
 
-    func showSelection(near rect: NSRect?) {
+    func showSelection(near rect: NSRect?, sourcePID: pid_t?) {
         var shouldPositionNearSelection = false
         if selPanel == nil {
             let p = FloatPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 360),
@@ -214,6 +229,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             p.setFrameOrigin(clamp(origin: NSPoint(x: pt.x, y: pt.y - size.height), size: size, anchor: pt))
         }
         p.orderFrontRegardless()
+        watchSelectionEscape(sourcePID: sourcePID)
+    }
+
+    private func watchSelectionEscape(sourcePID: pid_t?) {
+        stopWatchingSelectionEscape()
+        guard let sourcePID, sourcePID != ProcessInfo.processInfo.processIdentifier,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == sourcePID,
+              AXIsProcessTrusted() else { return }
+        let events: CGEventMask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
+        guard let tap = CGEvent.tapCreateForPid(pid: sourcePID, place: .headInsertEventTap, options: .defaultTap,
+                                               eventsOfInterest: events, callback: { _, type, event, context in
+            guard let context else { return Unmanaged.passUnretained(event) }
+            let delegate = Unmanaged<AppDelegate>.fromOpaque(context).takeUnretainedValue()
+            return MainActor.assumeIsolated { delegate.handleSelectionEscape(type: type, event: event) }
+        }, userInfo: Unmanaged.passUnretained(self).toOpaque()),
+              let source = CFMachPortCreateRunLoopSource(nil, tap, 0) else { return }
+        selectionEscapeTap = tap
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+    }
+
+    private func handleSelectionEscape(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        guard let tap = selectionEscapeTap else { return Unmanaged.passUnretained(event) }
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            selectionEscapePressed = false
+            if type == .tapDisabledByTimeout { CGEvent.tapEnable(tap: tap, enable: true) }
+            return Unmanaged.passUnretained(event)
+        }
+        guard event.getIntegerValueField(.keyboardEventKeycode) == Int64(kVK_Escape) else {
+            return Unmanaged.passUnretained(event)
+        }
+        if type == .keyDown {
+            if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                selectionEscapePressed = event.flags.intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift]).isEmpty
+            }
+            return selectionEscapePressed ? nil : Unmanaged.passUnretained(event)
+        }
+        guard type == .keyUp, selectionEscapePressed else { return Unmanaged.passUnretained(event) }
+        selectionEscapePressed = false
+        // 等到松键再移除拦截，避免长按产生的重复按键传给取词应用。
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.selectionEscapeTap === tap else { return }
+            self.closeSelection()
+        }
+        return nil
+    }
+
+    private func stopWatchingSelectionEscape() {
+        if let selectionEscapeTap { CFMachPortInvalidate(selectionEscapeTap) }
+        selectionEscapeTap = nil
+        selectionEscapePressed = false
     }
 
     /// 重试：已有原文则直接重译，否则重新取词。
@@ -222,6 +287,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func closeSelection() {
+        stopWatchingSelectionEscape()
         selectionRequestID = nil
         selectionTask?.cancel()
         selModel.cancel()
@@ -291,15 +357,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             p.contentView?.layoutSubtreeIfNeeded()
             p.makeFirstResponder(p.initialFirstResponder)
         }
-        // Esc：仅在输入窗口为 key window 时由本应用处理，不会传给原应用。
-        escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
-            if e.keyCode == UInt16(kVK_Escape), e.window === self?.inPanel, !((e.window?.firstResponder as? NSTextView)?.hasMarkedText() ?? false) {
-                self?.closeInput(); return nil
-            }
-            return e
-        }
     }
-    var escMonitor: Any?
 
     func closeInput(restoreFocus: Bool = true) {
         inModel.cancel()
@@ -307,7 +365,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         inPanel?.saveFrame(usingName: inputFrameName)
         inPanel?.orderOut(nil)
         inModel.source = ""
-        if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
         // 只有当前台仍是本应用时才恢复原应用，避免抢走用户新切换的焦点。
         if restoreFocus && NSApp.isActive { prevApp?.activate() }
         prevApp = nil
